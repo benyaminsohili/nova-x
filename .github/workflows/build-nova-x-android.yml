@@ -1,0 +1,71 @@
+name: Build NOVA X Android
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-22.04
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/26.2.11394342
+      ANDROID_NDK_ROOT: /usr/local/lib/android/sdk/ndk/26.2.11394342
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Extract NOVA X source
+        run: |
+          set -e
+          ZIP=$(ls -1 *.zip | head -n 1)
+          [ -n "$ZIP" ] || { echo "No ZIP in repo root"; ls -la; exit 1; }
+          mkdir -p build_src
+          unzip -q "$ZIP" -d build_src
+          # project root = folder that contains Cargo.toml and android/
+          ROOT=$(dirname "$(find build_src -maxdepth 3 -name Cargo.toml -not -path '*/tunnel-node/*' | head -n 1)")
+          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          ls -la "$ROOT"
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: nova-x-android
+          cache-bin: "false"
+          workspaces: |
+            ${{ env.PROJECT_ROOT }} -> target
+
+      - name: Install Android NDK and cargo-ndk
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.2.11394342"
+          cargo install cargo-ndk --locked
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_ROOT }}/android
+        run: |
+          chmod +x ./gradlew
+          ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOVA-X-Android-APK
+          path: ${{ env.PROJECT_ROOT }}/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
