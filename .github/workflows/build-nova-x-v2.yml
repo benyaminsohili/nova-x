@@ -1,0 +1,116 @@
+
+name: Build NOVA X v2 APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nova-x-v2-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Find and extract source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ZIP=""
+          for f in \
+            NOVA-X-Android-Source-V2.zip \
+            NOVA-X-Android-Source-Lite.zip \
+            NOVA-X-Starter.zip
+          do
+            if [ -f "$f" ]; then
+              ZIP="$f"
+              break
+            fi
+          done
+
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: No NOVA X source ZIP found in repository root."
+            ls -la
+            exit 1
+          fi
+
+          echo "Using source: $ZIP"
+          unzip -tq "$ZIP"
+          mkdir -p source
+          unzip -q "$ZIP" -d source
+
+          GRADLEW="$(find source -type f -name gradlew -print -quit)"
+          if [ -z "$GRADLEW" ]; then
+            echo "ERROR: gradlew not found in ZIP."
+            find source -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+
+          APP_DIR="$(dirname "$GRADLEW")"
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
+          chmod +x "$GRADLEW"
+
+          echo "Gradle project: $APP_DIR"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;26.2.11394342"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/26.2.11394342" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/26.2.11394342" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Build APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$APP_DIR"
+          ./gradlew --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Find APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="$(find "$APP_DIR/app/build/outputs/apk/debug" -type f -name '*.apk' -print -quit)"
+          if [ -z "$APK" ]; then
+            echo "ERROR: APK was not generated."
+            exit 1
+          fi
+          echo "APK_PATH=$APK" >> "$GITHUB_ENV"
+          echo "APK generated: $APK"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: NOVA-X-v2-Android-APK
+          path: ${{ env.APK_PATH }}
+          if-no-files-found: error
+          retention-days: 14
